@@ -1,31 +1,31 @@
 use std::env;
 use std::fs;
 use std::path::Path;
-use std::time::Instant;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
-use reqwest;
-use tokio::task;
+use tokio::sync::Semaphore;
+use reqwest::Client;
 
-#[tokio::main(flavor = "multi_thread")] // Correctly initializes the multi-threaded runtime
+#[tokio::main(flavor = "multi_thread")]
 async fn main() {
     // Start the timer
-    let start_time = Instant::now();
+    let start_time: Instant = Instant::now();
 
     // Parse command-line arguments
     let args: Vec<String> = env::args().collect();
-    let folder = args.iter().position(|arg| arg == "--folder")
-        .and_then(|i| args.get(i + 1))
+    let folder: &String = args.iter().position(|arg: &String| arg == "--folder")
+        .and_then(|i: usize| args.get(i + 1))
         .expect("Usage: --folder <folder_path> --files <number_of_files> --threads <number_of_threads>");
-    let files: usize = args.iter().position(|arg| arg == "--files")
-        .and_then(|i| args.get(i + 1))
+    let files: usize = args.iter().position(|arg: &String| arg == "--files")
+        .and_then(|i: usize| args.get(i + 1))
         .expect("Usage: --folder <folder_path> --files <number_of_files> --threads <number_of_threads>")
         .parse()
         .expect("Invalid number for --files");
-    let threads: usize = args.iter().position(|arg| arg == "--threads")
-        .and_then(|i| args.get(i + 1))
+    let threads: usize = args.iter().position(|arg: &String| arg == "--threads")
+        .and_then(|i: usize| args.get(i + 1))
         .expect("Usage: --folder <folder_path> --files <number_of_files> --threads <number_of_threads>")
         .parse()
         .expect("Invalid number for --threads");
@@ -36,23 +36,32 @@ async fn main() {
     }
 
     // Base URL for downloading files
-    let base_url = "https://gutenberg.org/cache/epub";
+    let base_url: &'static str = "https://gutenberg.org/cache/epub";
 
     // Atomic counters for success and failure
-    let success_count = Arc::new(AtomicUsize::new(0));
-    let failure_count = Arc::new(AtomicUsize::new(0));
+    let success_count: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+    let failure_count: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+
+    // Create a shared HTTP client
+    let client: Arc<Client> = Arc::new(Client::new());
+
+    // Semaphore to limit concurrency
+    let semaphore: Arc<Semaphore> = Arc::new(Semaphore::new(threads));
 
     // Download files asynchronously in parallel
-    let mut tasks = vec![];
+    let mut tasks: Vec<tokio::task::JoinHandle<()>> = vec![];
     for i in 1..=files {
-        let url = format!("{}/{}/pg{}.txt", base_url, i, i);
-        let file_path = format!("{}/pg{}.txt", folder, i);
+        let url: String = format!("{}/{}/pg{}.txt", base_url, i, i);
+        let file_path: String = format!("{}/pg{}.txt", folder, i);
 
-        let success_count = Arc::clone(&success_count);
-        let failure_count = Arc::clone(&failure_count);
+        let client: Arc<Client> = Arc::clone(&client);
+        let success_count: Arc<AtomicUsize> = Arc::clone(&success_count);
+        let failure_count: Arc<AtomicUsize> = Arc::clone(&failure_count);
+        let semaphore: Arc<Semaphore> = Arc::clone(&semaphore);
 
-        tasks.push(task::spawn(async move {
-            match download_file(&url, &file_path).await {
+        tasks.push(tokio::spawn(async move {
+            let _permit: tokio::sync::SemaphorePermit<'_> = semaphore.acquire().await.unwrap();
+            match download_file(&client, &url, &file_path).await {
                 Ok(_) => {
                     success_count.fetch_add(1, Ordering::SeqCst);
                     println!("File {} downloaded successfully to {}", i, file_path);
@@ -71,7 +80,7 @@ async fn main() {
     }
 
     // Calculate and display elapsed time
-    let elapsed_time = start_time.elapsed();
+    let elapsed_time: std::time::Duration = start_time.elapsed();
     println!(
         "Downloaded {} files in {:.2?} seconds using {} threads ({} succeeded, {} failed)",
         files,
@@ -82,12 +91,12 @@ async fn main() {
     );
 }
 
-async fn download_file(url: &str, file_path: &str) -> Result<(), Box<dyn std::error::Error>> {
+async fn download_file(client: &Client, url: &str, file_path: &str) -> Result<(), Box<dyn std::error::Error>> {
     // Send a GET request to the URL
-    let response = reqwest::get(url).await?;
+    let response: reqwest::Response = client.get(url).send().await?;
     if response.status().is_success() {
         // Write the response body to the file asynchronously
-        let mut file = File::create(file_path).await?;
+        let mut file: File = File::create(file_path).await?;
         let content = response.bytes().await?;
         file.write_all(&content).await?;
         Ok(())
