@@ -15,7 +15,7 @@ This project is a high-performance, multithreaded file downloader written in Rus
 ### Build and Run
 1. Clone the repository:
    ```bash
-   git clone <repository-url>
+   git clone [<repository-url>](https://github.com/invalidcharactersnotavailable/gutenberg-downloader.git)
    cd rust
    ```
 
